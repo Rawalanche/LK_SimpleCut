@@ -50,7 +50,6 @@ class CARVER_OT_operator(bpy.types.Operator):
     def __init__(self):
         context = bpy.context
 
-        # Carve mode: Cut, Object, Profile
         self.CutMode = False
         self.CreateMode = False
 
@@ -113,9 +112,7 @@ class CARVER_OT_operator(bpy.types.Operator):
         # Mouse region
         self.mouse_region = -1, -1
 
-        self.last_mouse_pos = Vector((0, 0))
-
-        self.bigPP = True
+        self.MouseStartPoint = Vector((0, 0))
 
     @classmethod
     def poll(cls, context):
@@ -229,16 +226,37 @@ class CARVER_OT_operator(bpy.types.Operator):
             # LMB Press
             if event.type == 'LEFTMOUSE' and self.in_view_3d:
 
+                CurrentMousePos = Vector((event.mouse_region_x, event.mouse_region_y))
+                MouseNearStartPoint = (self.MouseStartPoint - CurrentMousePos).length < 10
+
                 if event.value == 'PRESS':
                     if self.CutMode is False:
-
+                        # Enable cut mode
                         self.CutMode = True
-                        self.mouse_path[0] = (event.mouse_region_x, event.mouse_region_y)
-                        self.mouse_path[1] = (event.mouse_region_x, event.mouse_region_y)
+
+                        if self.CutterShape is not self.polygon:
+                            # Start drawing cutter shape
+                            self.mouse_path[0] = (event.mouse_region_x, event.mouse_region_y)
+                            self.mouse_path[1] = (event.mouse_region_x, event.mouse_region_y)
+                        elif self.CutterShape is self.polygon:
+                            # Place first point of polygon shape and store initial mouse position
+                            self.mouse_path.clear()
+                            self.mouse_path.append((event.mouse_region_x, event.mouse_region_y))
+                            self.mouse_path.append((event.mouse_region_x, event.mouse_region_y))
+                            self.MouseStartPoint = Vector((event.mouse_region_x, event.mouse_region_y))
+
+                    elif self.CutMode is True and self.CutterShape is self.polygon:
+                        if MouseNearStartPoint is True:
+                            # If mouse is close to first point, create the polygon cutter
+                            CreateCutLine(self, context)
+                            self.Cut()
+                            UndoListUpdate(self)
+                        else:
+                            # Otherwise, add another polygon shape point
+                            self.mouse_path.append((event.mouse_region_x, event.mouse_region_y))
 
                 elif event.value == 'RELEASE':
-                    if self.CutMode is True:
-
+                    if self.CutMode is True and self.CutterShape is not self.polygon:
                         # Cut creation
                         if self.CutterShape == self.rectangle:
                             CreateRectangleCutterMesh(self, context)
@@ -254,24 +272,23 @@ class CARVER_OT_operator(bpy.types.Operator):
                             UndoListUpdate(self)
 
             # Mouse move
-            if event.type == 'MOUSEMOVE':
-                if self.CutMode is True:
-                    if self.alt is True:
-                        # Move the cutter mesh
-                        self.xpos += (event.mouse_region_x - self.last_mouse_region_x)
-                        self.ypos += (event.mouse_region_y - self.last_mouse_region_y)
+            if event.type == 'MOUSEMOVE' and self.CutMode is True:
+                if self.alt is True:
+                    # Move the cutter mesh
+                    self.xpos += (event.mouse_region_x - self.last_mouse_region_x)
+                    self.ypos += (event.mouse_region_y - self.last_mouse_region_y)
 
-                        self.last_mouse_region_x = event.mouse_region_x
-                        self.last_mouse_region_y = event.mouse_region_y
+                    self.last_mouse_region_x = event.mouse_region_x
+                    self.last_mouse_region_y = event.mouse_region_y
+                else:
+                    if self.ctrl:
+                        # Snap mouse position to the cursor
+                        mouse_pos = [[event.mouse_region_x, event.mouse_region_y]]
+                        Snap_Cursor(self, context, event, mouse_pos)
                     else:
-                        if self.ctrl:
-                            # Snap mouse position to the cursor
-                            mouse_pos = [[event.mouse_region_x, event.mouse_region_y]]
-                            Snap_Cursor(self, context, event, mouse_pos)
-                        else:
-                            # Move the last mouse path point to current cursor location
-                            if len(self.mouse_path) > 0:
-                                self.mouse_path[len(self.mouse_path) - 1] = (event.mouse_region_x, event.mouse_region_y)
+                        # Move the last mouse path point to current cursor location
+                        if len(self.mouse_path) > 0:
+                            self.mouse_path[len(self.mouse_path) - 1] = (event.mouse_region_x, event.mouse_region_y)
 
             # Cycle cut shapes
             if event.type == 'TAB' and event.value == 'PRESS':
@@ -280,16 +297,6 @@ class CARVER_OT_operator(bpy.types.Operator):
                     self.CutterShape += 1
                     if self.CutterShape > 2:
                         self.CutterShape = 0
-
-            # Object creation
-            if event.type == 'C' and event.value == 'PRESS':
-                if self.ExclusiveCreateMode is False:
-                    self.CreateMode = not self.CreateMode
-
-            # Close polygonal shape
-            if event.type == 'X' and event.value == 'PRESS':
-                if self.CreateMode:
-                    self.Closed = not self.Closed
 
             # Apply boolean
             if event.type == 'Q' and event.value == 'PRESS':
@@ -336,7 +343,7 @@ class CARVER_OT_operator(bpy.types.Operator):
 
             return {'RUNNING_MODAL'}
 
-        except:
+        except Exception:
             print("\n[Carver MT ERROR]\n")
             import traceback
             traceback.print_exc()
@@ -524,7 +531,7 @@ class CARVER_OT_operator(bpy.types.Operator):
                         if (mb.type == 'BOOLEAN') and (mb.name == BMname):
                             try:
                                 bpy.ops.object.modifier_apply(apply_as='DATA', modifier=BMname)
-                            except:
+                            except Exception:
                                 bpy.ops.object.modifier_remove(modifier=BMname)
                                 exc_type, exc_value, exc_traceback = sys.exc_info()
                                 self.report({'ERROR'}, str(exc_value))
@@ -557,7 +564,7 @@ class CARVER_OT_operator(bpy.types.Operator):
                     if (mb.type == 'BOOLEAN') and (mb.name == BMname):
                         try:
                             bpy.ops.object.modifier_apply(apply_as='DATA', modifier=BMname)
-                        except:
+                        except Exception:
                             bpy.ops.object.modifier_remove(modifier=BMname)
                             exc_type, exc_value, exc_traceback = sys.exc_info()
                             self.report({'ERROR'}, str(exc_value))
